@@ -49,10 +49,12 @@ const spacing = 0.25;
 const origin = new THREE.Vector3(-(nx-1)/2*spacing, 1.2, -(nz-1)/2*spacing);
 let points = [];
 let constraints = [];
+let restPositions = [];
 
 function initSoft() {
   points = [];
   constraints = [];
+  restPositions = [];
   for (let z=0; z<nz; z++){
     for (let y=0; y<ny; y++){
       for (let x=0; x<nx; x++){
@@ -62,6 +64,7 @@ function initSoft() {
           prev: p.clone(),
           invMass: 1.0,
         });
+        restPositions.push(p.clone());
       }
     }
   }
@@ -82,7 +85,7 @@ function initSoft() {
 }
 
 function addConstraint(i,j){
-  const rest = points[i].pos.distanceTo(points[j].pos);
+  const rest = restPositions[i].distanceTo(restPositions[j]);
   constraints.push({i,j,rest});
 }
 
@@ -130,6 +133,8 @@ let dt = 1/60;
 let damp = 0.99;
 let stiffness = parseFloat(document.getElementById('stiff').value);
 let solverIters = parseInt(document.getElementById('iters').value);
+let releaseRelaxation = 0.12;
+let maxReleaseVel = 1.5;
 
 function pinTopLayer(flag){
   for (let z=0; z<nz; z++){
@@ -150,6 +155,11 @@ let raycaster = new THREE.Raycaster();
 let mouse = new THREE.Vector2();
 let dragged = null;
 let dragOffset = new THREE.Vector3();
+let lastPointerTime = 0;
+let lastPointerPos = new THREE.Vector3();
+
+const bounds = {min: new THREE.Vector3(-1.2,0, -1.2), max: new THREE.Vector3(1.2, 2.4, 1.2)};
+const restitution = 0.4;
 
 renderer.domElement.addEventListener('pointerdown', (ev)=>{
   mouse.x = (ev.clientX / innerWidth) * 2 - 1;
@@ -166,6 +176,8 @@ renderer.domElement.addEventListener('pointerdown', (ev)=>{
     dragged = best;
     dragOffset.copy(points[dragged].pos).sub(pt);
     points[dragged].invMass = 0;
+    lastPointerTime = performance.now();
+    lastPointerPos.copy(pt);
   }
 });
 
@@ -177,12 +189,30 @@ renderer.domElement.addEventListener('pointermove', (ev)=>{
   const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
   const p = new THREE.Vector3();
   raycaster.ray.intersectPlane(plane, p);
-  if (p) points[dragged].pos.copy(p).add(dragOffset);
+  if (p) {
+    points[dragged].pos.copy(p).add(dragOffset);
+    lastPointerPos.copy(p);
+    lastPointerTime = performance.now();
+  }
 });
 
-window.addEventListener('pointerup', ()=> {
+renderer.domElement.addEventListener('pointerup', (ev)=> {
   if (dragged!==null){
+    const now = performance.now();
+    const dtPointer = Math.max(1e-3, (now - lastPointerTime)/1000);
+    const currentPos = points[dragged].pos.clone();
+    const pointerVel = currentPos.clone().sub(lastPointerPos).divideScalar(dtPointer);
+    if (pointerVel.length() > maxReleaseVel){
+      pointerVel.setLength(maxReleaseVel);
+    }
+    // apply capped release velocity to particle prev position -> controls resulting velocity
+    points[dragged].prev.copy(points[dragged].pos.clone().sub(pointerVel.multiplyScalar(dt)));
     points[dragged].invMass = 1.0;
+    // apply shape-matching impulse: nudge all particles toward their rest positions gradually
+    for (let i=0;i<points.length;i++){
+      const toRest = restPositions[i].clone().sub(points[i].pos);
+      points[i].pos.addScaledVector(toRest, releaseRelaxation);
+    }
     dragged = null;
   }
 });
@@ -211,7 +241,6 @@ function step() {
       if (wA>0) pA.pos.addScaledVector(corr, -wA);
       if (wB>0) pB.pos.addScaledVector(corr, wB);
     }
-
     const center = new THREE.Vector3();
     for (let p of points) center.add(p.pos);
     center.multiplyScalar(1/points.length);
@@ -222,8 +251,35 @@ function step() {
   }
 
   for (let p of points){
-    if (p.pos.y < 0){
-      p.pos.y = 0;
+    if (p.pos.y < bounds.min.y){
+      p.pos.y = bounds.min.y;
+      const vel = p.pos.clone().sub(p.prev);
+      vel.y = -vel.y * restitution;
+      p.prev.copy(p.pos.clone().sub(vel));
+    }
+    if (p.pos.x < bounds.min.x){
+      p.pos.x = bounds.min.x;
+      const vel = p.pos.clone().sub(p.prev);
+      vel.x = -vel.x * restitution;
+      p.prev.copy(p.pos.clone().sub(vel));
+    }
+    if (p.pos.x > bounds.max.x){
+      p.pos.x = bounds.max.x;
+      const vel = p.pos.clone().sub(p.prev);
+      vel.x = -vel.x * restitution;
+      p.prev.copy(p.pos.clone().sub(vel));
+    }
+    if (p.pos.z < bounds.min.z){
+      p.pos.z = bounds.min.z;
+      const vel = p.pos.clone().sub(p.prev);
+      vel.z = -vel.z * restitution;
+      p.prev.copy(p.pos.clone().sub(vel));
+    }
+    if (p.pos.z > bounds.max.z){
+      p.pos.z = bounds.max.z;
+      const vel = p.pos.clone().sub(p.prev);
+      vel.z = -vel.z * restitution;
+      p.prev.copy(p.pos.clone().sub(vel));
     }
   }
 
