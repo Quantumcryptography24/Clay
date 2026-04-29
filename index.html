@@ -1,0 +1,252 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Soft Body PBD Cube — three.js</title>
+  <style>body{margin:0;overflow:hidden} #ui{position:absolute;left:10px;top:10px;color:#fff;font-family:sans-serif;z-index:2}</style>
+</head>
+<body>
+<div style="position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:3;text-align:center;font-family:system-ui,Arial,sans-serif">
+  <div style="font-size:22px;font-weight:700;color:#ffffff;text-shadow:0 1px 2px rgba(0,0,0,0.5)">Clay</div>
+  <div style="font-size:13px;color:#e6e6e6;margin-top:2px">Some clay</div>
+</div>
+
+<div id="ui">
+  <div>Drag with mouse. Reset / Toggle Wireframe / Stiffness / Iterations</div>
+  <button id="reset">Reset</button>
+  <button id="toggle">Toggle Wireframe</button>
+  <label>Stiffness <input id="stiff" type="range" min="0.01" max="1" step="0.01" value="0.8"></label>
+  <label>Iter <input id="iters" type="number" min="1" max="20" value="5" style="width:50px"></label>
+</div>
+
+<script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
+
+<script>
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
+camera.position.set(2.5,2.5,4);
+camera.lookAt(0,0.8,0);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+window.addEventListener('resize', ()=> {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+scene.add(new THREE.AmbientLight(0xffffff,0.6));
+const dir = new THREE.DirectionalLight(0xffffff,0.8);
+dir.position.set(5,10,7);
+scene.add(dir);
+const groundGeo = new THREE.PlaneGeometry(20,20);
+const groundMat = new THREE.MeshStandardMaterial({color:0x333333});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -0.01;
+scene.add(ground);
+
+let nx = 6, ny = 6, nz = 6;
+const spacing = 0.25;
+const origin = new THREE.Vector3(-(nx-1)/2*spacing, 1.2, -(nz-1)/2*spacing);
+let points = [];
+let constraints = [];
+
+function initSoft() {
+  points = [];
+  constraints = [];
+  for (let z=0; z<nz; z++){
+    for (let y=0; y<ny; y++){
+      for (let x=0; x<nx; x++){
+        const p = new THREE.Vector3().copy(origin).add(new THREE.Vector3(x*spacing, -y*spacing, z*spacing));
+        points.push({
+          pos: p.clone(),
+          prev: p.clone(),
+          invMass: 1.0,
+        });
+      }
+    }
+  }
+  function idx(x,y,z){return x + y*nx + z*nx*ny;}
+  for (let z=0; z<nz; z++){
+    for (let y=0; y<ny; y++){
+      for (let x=0; x<nx; x++){
+        const i = idx(x,y,z);
+        if (x+1<nx) addConstraint(i, idx(x+1,y,z));
+        if (y+1<ny) addConstraint(i, idx(x,y+1,z));
+        if (z+1<nz) addConstraint(i, idx(x,y,z+1));
+        if (x+1<nx && y+1<ny) addConstraint(i, idx(x+1,y+1,z));
+        if (x+1<nx && z+1<nz) addConstraint(i, idx(x+1,y,z+1));
+        if (y+1<ny && z+1<nz) addConstraint(i, idx(x,y+1,z+1));
+      }
+    }
+  }
+}
+
+function addConstraint(i,j){
+  const rest = points[i].pos.distanceTo(points[j].pos);
+  constraints.push({i,j,rest});
+}
+
+initSoft();
+
+let geom, mesh;
+function buildMesh() {
+  geom = new THREE.BufferGeometry();
+  const vertices = new Float32Array(points.length * 3);
+  geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+  const indices = [];
+  function vid(x,y,z){return x + y*nx + z*nx*ny;}
+  for (let z=0; z<nz-1; z++){
+    for (let y=0; y<ny-1; y++){
+      for (let x=0; x<nx-1; x++){
+        const p000 = vid(x,y,z), p100 = vid(x+1,y,z), p010 = vid(x,y+1,z), p110 = vid(x+1,y+1,z);
+        const p001 = vid(x,y,z+1), p101 = vid(x+1,y,z+1), p011 = vid(x,y+1,z+1), p111 = vid(x+1,y+1,z+1);
+        if (x==nx-2){ addQuad(indices, p100, p101, p110, p111); }
+        if (y==0){ addQuad(indices, p000, p100, p001, p101); }
+        if (z==nz-2){ addQuad(indices, p001, p101, p011, p111); }
+        if (x==0){ addQuad(indices, p000, p001, p010, p011); }
+        if (y==ny-2){ addQuad(indices, p010, p110, p011, p111); }
+        if (z==0){ addQuad(indices, p000, p100, p010, p110); }
+      }
+    }
+  }
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({color:0x66aaff, metalness:0.1, roughness:0.6, side: THREE.DoubleSide});
+  mesh = new THREE.Mesh(geom, mat);
+  scene.add(mesh);
+  const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geom), new THREE.LineBasicMaterial({color:0x000000,linewidth:1}));
+  mesh.add(wire);
+}
+
+function addQuad(indices, a,b,c,d){
+  indices.push(a,b,c);
+  indices.push(b,d,c);
+}
+
+buildMesh();
+
+let gravity = new THREE.Vector3(0,-9.8,0);
+let dt = 1/60;
+let damp = 0.99;
+let stiffness = parseFloat(document.getElementById('stiff').value);
+let solverIters = parseInt(document.getElementById('iters').value);
+
+function pinTopLayer(flag){
+  for (let z=0; z<nz; z++){
+    for (let x=0; x<nx; x++){
+      const idx = x + 0*nx + z*nx*ny;
+      points[idx].invMass = flag ? 0.0 : 1.0;
+    }
+  }
+}
+pinTopLayer(false);
+
+document.getElementById('stiff').addEventListener('input', e=> stiffness = parseFloat(e.target.value));
+document.getElementById('iters').addEventListener('change', e=> solverIters = parseInt(e.target.value));
+document.getElementById('reset').addEventListener('click', ()=> { scene.remove(mesh); initSoft(); buildMesh(); });
+document.getElementById('toggle').addEventListener('click', ()=> { mesh.material.wireframe = !mesh.material.wireframe; });
+
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+let dragged = null;
+let dragOffset = new THREE.Vector3();
+
+renderer.domElement.addEventListener('pointerdown', (ev)=>{
+  mouse.x = (ev.clientX / innerWidth) * 2 - 1;
+  mouse.y = - (ev.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObject(mesh, true);
+  if (intersects.length>0){
+    const pt = intersects[0].point;
+    let best = null; let bestd = Infinity;
+    for (let i=0;i<points.length;i++){
+      const d = pt.distanceToSquared(points[i].pos);
+      if (d<bestd){ best = i; bestd = d; }
+    }
+    dragged = best;
+    dragOffset.copy(points[dragged].pos).sub(pt);
+    points[dragged].invMass = 0;
+  }
+});
+
+renderer.domElement.addEventListener('pointermove', (ev)=>{
+  if (dragged===null) return;
+  mouse.x = (ev.clientX / innerWidth) * 2 - 1;
+  mouse.y = - (ev.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const plane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+  const p = new THREE.Vector3();
+  raycaster.ray.intersectPlane(plane, p);
+  if (p) points[dragged].pos.copy(p).add(dragOffset);
+});
+
+window.addEventListener('pointerup', ()=> {
+  if (dragged!==null){
+    points[dragged].invMass = 1.0;
+    dragged = null;
+  }
+});
+
+function step() {
+  for (let i=0;i<points.length;i++){
+    const pt = points[i];
+    if (pt.invMass===0) continue;
+    const temp = pt.pos.clone();
+    const vel = pt.pos.clone().sub(pt.prev).multiplyScalar(damp);
+    pt.pos.add(vel).addScaledVector(gravity, dt*dt);
+    pt.prev.copy(temp);
+  }
+
+  for (let iter=0; iter<solverIters; iter++){
+    for (let c of constraints){
+      const pA = points[c.i], pB = points[c.j];
+      const dir = pA.pos.clone().sub(pB.pos);
+      const len = dir.length();
+      if (len==0) continue;
+      const diff = (len - c.rest) / len;
+      const wA = pA.invMass, wB = pB.invMass;
+      const wsum = wA + wB;
+      if (wsum==0) continue;
+      const corr = dir.multiplyScalar(stiffness * diff / wsum);
+      if (wA>0) pA.pos.addScaledVector(corr, -wA);
+      if (wB>0) pB.pos.addScaledVector(corr, wB);
+    }
+
+    const center = new THREE.Vector3();
+    for (let p of points) center.add(p.pos);
+    center.multiplyScalar(1/points.length);
+    for (let p of points){
+      const toCenter = p.pos.clone().sub(center);
+      p.pos.addScaledVector(toCenter, -0.001*stiffness);
+    }
+  }
+
+  for (let p of points){
+    if (p.pos.y < 0){
+      p.pos.y = 0;
+    }
+  }
+
+  const positionAttr = geom.getAttribute('position');
+  for (let i=0;i<points.length;i++){
+    positionAttr.setXYZ(i, points[i].pos.x, points[i].pos.y, points[i].pos.z);
+  }
+  positionAttr.needsUpdate = true;
+  geom.computeVertexNormals();
+}
+
+let isRot = false, last = {x:0,y:0};
+renderer.domElement.addEventListener('pointerdown', (e)=>{ if (e.button===2){ isRot=true; last.x=e.clientX; last.y=e.clientY; }});
+renderer.domElement.addEventListener('pointermove', (e)=>{ if (!isRot) return; const dx=(e.clientX-last.x)/200, dy=(e.clientY-last.y)/200; last.x=e.clientX; last.y=e.clientY; camera.position.applyAxisAngle(new THREE.Vector3(0,1,0), -dx); camera.position.applyAxisAngle(new THREE.Vector3(1,0,0), -dy); camera.lookAt(0,0.8,0); });
+window.addEventListener('pointerup', ()=> isRot=false);
+
+function animate(){
+  requestAnimationFrame(animate);
+  step();
+  renderer.render(scene, camera);
+}
+animate();
+
+</script>
+</body>
+</html>
